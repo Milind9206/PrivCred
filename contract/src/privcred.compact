@@ -1,0 +1,108 @@
+pragma language_version >= 0.22;
+
+import CompactStandardLibrary;
+
+export enum ApplicationStatus {
+  Applied,
+  Verified,
+  Rejected
+}
+
+export struct CredentialData {
+  candidatePk: Bytes<32>;
+  degreeVerified: Boolean;
+  licenseActive: Boolean;
+  backgroundClean: Boolean;
+  degreeGrade: Uint<16>;
+  ssnHash: Bytes<32>;
+}
+
+export struct JobRequirements {
+  requireDegree: Boolean;
+  requireLicense: Boolean;
+  requireBackground: Boolean;
+  minGrade: Uint<16>;
+}
+
+export ledger contractAdmin: Bytes<32>;
+export ledger issuers: Map<Bytes<32>, Boolean>;
+export ledger credentialCommitments: Map<Bytes<32>, Bytes<32>>;
+export ledger applications: Map<Bytes<32>, Map<Bytes<32>, ApplicationStatus>>;
+
+witness adminSecret(): Bytes<32>;
+witness issuerSecret(): Bytes<32>;
+witness candidateSecret(): Bytes<32>;
+witness getCredentialData(): CredentialData;
+witness getCredentialNonce(): Bytes<32>;
+
+constructor(adminPk: Bytes<32>) {
+  contractAdmin = disclose(adminPk);
+}
+
+export circuit registerIssuer(issuerPk: Bytes<32>): [] {
+  assert(deriveAdminPublicKey(adminSecret()) == contractAdmin, "Only admin can register issuers");
+  issuers.insert(disclose(issuerPk), disclose(true));
+}
+
+export circuit removeIssuer(issuerPk: Bytes<32>): [] {
+  assert(deriveAdminPublicKey(adminSecret()) == contractAdmin, "Only admin can remove issuers");
+  issuers.insert(disclose(issuerPk), disclose(false));
+}
+
+export circuit anchorCredential(candidate: Bytes<32>, commitment: Bytes<32>): [] {
+  const sk = issuerSecret();
+  const issuerPk = deriveIssuerPublicKey(sk);
+  assert(issuers.lookup(issuerPk) == true, "Caller is not a trusted issuer");
+  credentialCommitments.insert(disclose(candidate), disclose(commitment));
+}
+
+export circuit applyAndVerify(employer: Bytes<32>, requirements: JobRequirements): [] {
+  const sk = candidateSecret();
+  const candidatePk = deriveCandidatePublicKey(sk);
+  
+  // Retrieve the candidate's local private credential data + nonce
+  const creds = getCredentialData();
+  const nonce = getCredentialNonce();
+  
+  // Verify that the credential belongs to the candidate calling the circuit
+  assert(creds.candidatePk == candidatePk, "Credential candidatePk mismatch");
+  
+  // Reconstruct the commitment hash inside the circuit
+  const expectedCommitment = persistentCommit<CredentialData>(creds, nonce);
+  
+  // Verify the candidate has an anchored commitment on-chain matching the expected commitment
+  assert(credentialCommitments.member(candidatePk), "No commitment anchored for candidate");
+  const actualCommitment = credentialCommitments.lookup(candidatePk);
+  assert(actualCommitment == expectedCommitment, "Commitment verification failed");
+  
+  // Evaluate the job requirements
+  if (requirements.requireDegree) {
+    assert(creds.degreeVerified, "Degree requirement not satisfied");
+  }
+  if (requirements.requireLicense) {
+    assert(creds.licenseActive, "Active license requirement not satisfied");
+  }
+  if (requirements.requireBackground) {
+    assert(creds.backgroundClean, "Clean background check requirement not satisfied");
+  }
+  assert(creds.degreeGrade >= requirements.minGrade, "Minimum grade requirement not satisfied");
+  
+  // Write the application status on-chain under the employer's applications map
+  const emp = disclose(employer);
+  if (!applications.member(emp)) {
+    applications.insert(emp, default<Map<Bytes<32>, ApplicationStatus>>());
+  }
+  applications.lookup(emp).insert(disclose(candidatePk), disclose(ApplicationStatus.Verified));
+}
+
+pure circuit deriveAdminPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "privcred:admin:v1"), sk]);
+}
+
+pure circuit deriveIssuerPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "privcred:issuer:v1"), sk]);
+}
+
+pure circuit deriveCandidatePublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "privcred:candidate:v1"), sk]);
+}

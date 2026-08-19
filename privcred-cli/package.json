@@ -1,0 +1,14 @@
+{
+  "name": "@privcred/cli",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "build": "rm -rf dist && tsc --project tsconfig.build.json"
+  },
+  "dependencies": {
+    "@privcred/contract": "*"
+  }
+}
